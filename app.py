@@ -5,6 +5,7 @@ import time
 import random
 import re
 import os
+import shutil
 from dotenv import load_dotenv
 
 # Custom modules
@@ -18,15 +19,24 @@ load_dotenv()
 st.set_page_config(page_title="Cold Mail Dashboard", layout="wide")
 st.title("📨 Project Mail Sender")
 
+# --- CONFIG CONSTANTS ---
+ATTACHMENTS_DIR = os.path.join("sessions", "attachments")
+
+# Ensure attachment dir exists
+if not os.path.exists(ATTACHMENTS_DIR):
+    os.makedirs(ATTACHMENTS_DIR)
+
 # --- 0. HELPER: AUTO-SAVE ---
 def trigger_save():
     """Helper to save current state to the active session"""
     if st.session_state.get('current_session'):
-        # Get Template Data
+        # Get Template Data including Attachment info
         tpl_data = {
             "subject": st.session_state.get('input_subject', ''),
             "body": st.session_state.get('input_body', ''),
-            "is_html": st.session_state.get('input_is_html', False)
+            "is_html": st.session_state.get('input_is_html', False),
+            "attachment_path": st.session_state.get('attachment_path'),
+            "attachment_name": st.session_state.get('attachment_name')
         }
         
         save_session(
@@ -46,6 +56,11 @@ if 'current_session' not in st.session_state:
     st.session_state.current_session = None
 if 'mapping' not in st.session_state:
     st.session_state.mapping = {}
+# Init Attachment States
+if 'attachment_path' not in st.session_state:
+    st.session_state.attachment_path = None
+if 'attachment_name' not in st.session_state:
+    st.session_state.attachment_name = ""
 
 # --- 2. SIDEBAR: SESSION MANAGER ---
 with st.sidebar:
@@ -64,6 +79,8 @@ with st.sidebar:
                 # Clear inputs
                 st.session_state.input_subject = ""
                 st.session_state.input_body = ""
+                st.session_state.attachment_path = None
+                st.session_state.attachment_name = ""
                 trigger_save()
                 st.rerun()
 
@@ -94,6 +111,10 @@ with st.sidebar:
             st.session_state.input_subject = state['template'].get('subject', '')
             st.session_state.input_body = state['template'].get('body', '')
             st.session_state.input_is_html = state['template'].get('is_html', False)
+            
+            # Load Attachment Info
+            st.session_state.attachment_path = state['template'].get('attachment_path')
+            st.session_state.attachment_name = state['template'].get('attachment_name')
             
             st.success(f"Loaded: {selected_session}")
             st.rerun()
@@ -164,6 +185,59 @@ if st.session_state.df_processed is not None:
             body = st.text_area("Email Body", height=300, key="input_body", help="Use {Variable} for placeholders")
             is_html = st.checkbox("Send as HTML", key="input_is_html")
             
+            st.divider()
+            
+            # --- ATTACHMENT SECTION ---
+            st.subheader("📎 Attachments")
+            
+            # 1. File Uploader
+            new_attachment = st.file_uploader("Upload File (CV, Brochure, etc.)")
+            
+            # Logic: If new file is uploaded, save it to disk and update session
+            if new_attachment:
+                # Create session specific folder
+                session_att_dir = os.path.join(ATTACHMENTS_DIR, st.session_state.current_session)
+                if not os.path.exists(session_att_dir):
+                    os.makedirs(session_att_dir)
+                
+                # Save file
+                save_path = os.path.join(session_att_dir, new_attachment.name)
+                with open(save_path, "wb") as f:
+                    f.write(new_attachment.getbuffer())
+                
+                # Update Session State
+                st.session_state.attachment_path = save_path
+                # Default name to filename if not already set
+                if not st.session_state.attachment_name:
+                    st.session_state.attachment_name = new_attachment.name
+                
+                st.success(f"Uploaded: {new_attachment.name}")
+                trigger_save()
+
+            # 2. Display Current Attachment & Rename Option
+            if st.session_state.attachment_path and os.path.exists(st.session_state.attachment_path):
+                curr_filename = os.path.basename(st.session_state.attachment_path)
+                st.info(f"✅ Current Attachment: **{curr_filename}**")
+                
+                # Rename Input
+                att_display_name = st.text_input(
+                    "Attachment Name (as seen by recipient)", 
+                    value=st.session_state.attachment_name,
+                    key="att_name_input"
+                )
+                
+                # Update name in session if changed
+                if att_display_name != st.session_state.attachment_name:
+                    st.session_state.attachment_name = att_display_name
+                    trigger_save()
+                
+                if st.button("❌ Remove Attachment"):
+                    st.session_state.attachment_path = None
+                    st.session_state.attachment_name = ""
+                    trigger_save()
+                    st.rerun()
+
+            st.divider()
             if st.button("💾 Save Template"):
                 trigger_save()
                 st.toast("Template saved!")
@@ -222,6 +296,8 @@ if st.session_state.df_processed is not None:
                 # Display Headers
                 st.markdown(f"**To:** {row.get('Email', 'Unknown')}")
                 st.markdown(f"**Subject:** {prev_subj}")
+                if st.session_state.attachment_path:
+                    st.markdown(f"**📎 Attachment:** {st.session_state.attachment_name}")
                 st.divider()
                 
                 if is_html:
@@ -275,6 +351,16 @@ if st.session_state.df_processed is not None:
         total = len(df)
         batch_count = 0
         
+        # --- ATTACHMENT PREP ---
+        att_file_obj = None
+        att_final_name = None
+        
+        # Check if we have a valid attachment
+        if st.session_state.attachment_path and os.path.exists(st.session_state.attachment_path):
+            att_file_obj = open(st.session_state.attachment_path, 'rb')
+            att_final_name = st.session_state.attachment_name
+            st.info(f"📎 Included Attachment: {att_final_name}")
+        
         for idx, row in df.iterrows():
             uid = row['_id']
             email_addr = row[target_email_col]
@@ -289,7 +375,7 @@ if st.session_state.df_processed is not None:
                 time.sleep(batch_delay)
             
             try:
-                # PREPARE: read template values from session state to avoid unbound variables
+                # PREPARE TEMPLATE
                 subject = st.session_state.get('input_subject', '')
                 body = st.session_state.get('input_body', '')
                 is_html = st.session_state.get('input_is_html', False)
@@ -302,7 +388,19 @@ if st.session_state.df_processed is not None:
                 
                 # SEND
                 status.text(f"Sending to {email_addr}...")
-                ok, msg = sender.send_email(email_addr, final_subj, final_body, is_html=is_html)
+                
+                # If attachment exists, we must reset pointer for every email
+                if att_file_obj:
+                    att_file_obj.seek(0)
+                
+                ok, msg = sender.send_email(
+                    email_addr, 
+                    final_subj, 
+                    final_body, 
+                    attachment_file=att_file_obj,
+                    attachment_name=att_final_name,
+                    is_html=is_html
+                )
                 
                 if ok:
                     st.session_state.sent_ids.add(uid)
@@ -320,5 +418,9 @@ if st.session_state.df_processed is not None:
                 
             except Exception as e:
                 st.error(f"Row Error: {e}")
-                
+        
+        # Cleanup file object
+        if att_file_obj:
+            att_file_obj.close()
+            
         st.success("Campaign Run Complete!")

@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import time
 import random
@@ -8,188 +9,316 @@ from dotenv import load_dotenv
 
 # Custom modules
 from utils.processor import process_data
-from utils.session import save_state, load_state
+from utils.session import save_session, load_session, list_sessions, delete_session
 from utils.sender import EmailSender
 
 # Load Env
 load_dotenv()
 
-st.set_page_config(page_title="Mail Dashboard", layout="wide")
+st.set_page_config(page_title="Cold Mail Dashboard", layout="wide")
 st.title("📨 Project Mail Sender")
 
-# --- 1. CREDENTIAL CHECK ---
-if not os.getenv("SENDER_EMAIL") or not os.getenv("APP_PASSWORD"):
-    st.error("⛔ CRITICAL ERROR: Credentials not found!")
-    st.info("Please create a `.env` file in the project folder with:\n\nSENDER_EMAIL=...\nAPP_PASSWORD=...")
-    st.stop()
+# --- 0. HELPER: AUTO-SAVE ---
+def trigger_save():
+    """Helper to save current state to the active session"""
+    if st.session_state.get('current_session'):
+        # Get Template Data
+        tpl_data = {
+            "subject": st.session_state.get('input_subject', ''),
+            "body": st.session_state.get('input_body', ''),
+            "is_html": st.session_state.get('input_is_html', False)
+        }
+        
+        save_session(
+            st.session_state.current_session,
+            tpl_data,
+            st.session_state.get('mapping', {}),
+            st.session_state.get('df_processed'),
+            st.session_state.get('sent_ids', set())
+        )
 
-# --- 2. SESSION MANAGEMENT ---
+# --- 1. SESSION STATE INIT ---
 if 'df_processed' not in st.session_state:
     st.session_state.df_processed = None
 if 'sent_ids' not in st.session_state:
     st.session_state.sent_ids = set()
+if 'current_session' not in st.session_state:
+    st.session_state.current_session = None
+if 'mapping' not in st.session_state:
+    st.session_state.mapping = {}
 
-# Load previous session
-if st.sidebar.button("📂 Load Last Session"):
-    saved_state = load_state()
-    if saved_state:
-        st.session_state.df_processed = saved_state['data']
-        st.session_state.sent_ids = saved_state['sent_ids']
-        st.success("Loaded previous project data!")
-    else:
-        st.warning("No saved session found.")
-
-# --- SIDEBAR CONFIG ---
+# --- 2. SIDEBAR: SESSION MANAGER ---
 with st.sidebar:
-    st.header("⚙️ Configuration")
-    st.success(f"Logged in as: {os.getenv('SENDER_EMAIL')}")
+    st.header("📂 Session Manager")
     
-    st.divider()
-    st.subheader("⏱️ Time Settings")
+    # Create New Session
+    with st.expander("Create New Session", expanded=False):
+        new_session_name = st.text_input("New Session Name", placeholder="e.g. Winter_Campaign")
+        if st.button("➕ Create & Switch"):
+            if new_session_name:
+                clean_name = re.sub(r'[^a-zA-Z0-9_]', '_', new_session_name)
+                st.session_state.current_session = clean_name
+                st.session_state.df_processed = None
+                st.session_state.sent_ids = set()
+                st.session_state.mapping = {}
+                # Clear inputs
+                st.session_state.input_subject = ""
+                st.session_state.input_body = ""
+                trigger_save()
+                st.rerun()
+
+    # Load Existing Session
+    available_sessions = list_sessions()
     
-    col1, col2 = st.columns(2)
-    with col1:
-        min_delay = st.number_input("Min Delay (s)", value=20, help="Wait at least this long between emails")
-    with col2:
-        max_delay = st.number_input("Max Delay (s)", value=50, help="Wait at most this long between emails")
+    # Determine index for selectbox
+    idx = 0
+    if st.session_state.current_session in available_sessions:
+        idx = available_sessions.index(st.session_state.current_session)
     
-    st.markdown("---")
-    st.markdown("**Batch Control**")
-    batch_size = st.number_input("Emails per Batch", value=20, help="How many emails to send before taking a break")
-    
-    # UPDATED: Default set to 300 seconds (5 minutes)
-    batch_delay = st.number_input(
-        "Batch Pause (seconds)", 
-        value=300, 
-        step=10,
-        help="Time to wait between batches. Default: 300s (5 mins)"
+    selected_session = st.selectbox(
+        "Select Active Session", 
+        options=["-- Select --"] + available_sessions,
+        index=idx + 1 if st.session_state.current_session else 0
     )
 
-# --- STEP 1: UPLOAD & PROCESS ---
-st.header("1. Data Input")
+    if selected_session != "-- Select --" and selected_session != st.session_state.current_session:
+        # Load logic
+        state = load_session(selected_session)
+        if state:
+            st.session_state.current_session = selected_session
+            st.session_state.df_processed = state['data']
+            st.session_state.sent_ids = state['sent_ids']
+            st.session_state.mapping = state['mapping']
+            
+            # Load template into session state for widgets
+            st.session_state.input_subject = state['template'].get('subject', '')
+            st.session_state.input_body = state['template'].get('body', '')
+            st.session_state.input_is_html = state['template'].get('is_html', False)
+            
+            st.success(f"Loaded: {selected_session}")
+            st.rerun()
 
-uploaded_file = st.file_uploader("Upload Excel/CSV", type=['xlsx', 'csv'])
-
-if uploaded_file:
-    # Read Raw
-    if uploaded_file.name.endswith('.csv'):
-        df_raw = pd.read_csv(uploaded_file)
+    if st.session_state.current_session:
+        st.info(f"🔵 Active: **{st.session_state.current_session}**")
+        if st.button("💾 Force Save"):
+            trigger_save()
+            st.toast("Saved successfully!")
     else:
-        df_raw = pd.read_excel(uploaded_file)
+        st.warning("Please create or select a session to start.")
+        st.stop() # Stop execution if no session
+
+    st.divider()
     
-    # Try to guess email column
-    cols = df_raw.columns.tolist()
-    guess_idx = next((i for i, c in enumerate(cols) if 'email' in c.lower()), 0)
-    
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.info(f"Loaded raw file with {len(df_raw)} rows.")
-    with col2:
+    # Settings
+    st.subheader("⚙️ Settings")
+    min_delay = st.number_input("Min Delay (s)", 20)
+    max_delay = st.number_input("Max Delay (s)", 50)
+    batch_size = st.number_input("Batch Size", 20)
+    batch_delay = st.number_input("Batch Pause (s)", 300)
+
+# --- 3. DATA INPUT ---
+st.header("1. Data & Recipients")
+
+# Only show upload if we don't have data, or want to replace it
+if st.session_state.df_processed is None:
+    uploaded_file = st.file_uploader("Upload Excel/CSV", type=['xlsx', 'csv'])
+    if uploaded_file:
+        if uploaded_file.name.endswith('.csv'):
+            df_raw = pd.read_csv(uploaded_file)
+        else:
+            df_raw = pd.read_excel(uploaded_file)
+        
+        cols = df_raw.columns.tolist()
+        guess_idx = next((i for i, c in enumerate(cols) if 'email' in c.lower()), 0)
         email_col = st.selectbox("Select Email Column", cols, index=guess_idx)
-    
-    if st.button("⚡ Process Data (Split Multiple Emails & Fix Errors)"):
-        with st.spinner("Normalizing data..."):
-            processed_df = process_data(df_raw, email_col)
-            st.session_state.df_processed = processed_df
-            st.success(f"Processed! Generated {len(processed_df)} unique mail tasks.")
-
-# Show Processed Data
-if st.session_state.df_processed is not None:
-    st.subheader("Recipients List")
-    st.dataframe(st.session_state.df_processed.head(3))
-    
-    # Progress Metric
-    total = len(st.session_state.df_processed)
-    sent = len([i for i in st.session_state.df_processed['_id'] if i in st.session_state.sent_ids])
-    st.progress(sent / total if total > 0 else 0)
-    st.caption(f"Progress: {sent} sent out of {total} total tasks")
-
-if st.session_state.df_processed is not None:
-    st.header("2. Template & Mapping")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        subject_tpl = st.text_input("Subject", "Hello {Name}")
-        body_tpl = st.text_area("Body", "Hi {Name},\n\nI am writing to you...", height=200)
-    
-    with col2:
-        st.markdown("**Variable Mapping**")
-        vars_needed = set(re.findall(r'\{([^}]+)\}', subject_tpl + body_tpl))
-        cols = st.session_state.df_processed.columns.tolist()
         
-        mapping = {}
-        # Filter out the internal ID column
-        display_cols = [c for c in cols if c != '_id']
-        
-        for v in vars_needed:
-            # Smart auto-select
-            default_idx = next((i for i, c in enumerate(display_cols) if v.lower() in c.lower()), 0)
-            mapping[v] = st.selectbox(f"Map '{{{v}}}' to:", display_cols, index=default_idx)
+        if st.button("⚡ Process & Save Data"):
+            with st.spinner("Processing..."):
+                processed_df = process_data(df_raw, email_col)
+                st.session_state.df_processed = processed_df
+                trigger_save() # <--- SAVES IMMEDIATELY
+                st.rerun()
+else:
+    # Data is loaded
+    st.success(f"✅ Data Loaded: {len(st.session_state.df_processed)} recipients")
+    with st.expander("View Data"):
+        st.dataframe(st.session_state.df_processed.head())
+    
+    if st.button("🗑️ Clear Data & Upload New"):
+        st.session_state.df_processed = None
+        st.session_state.sent_ids = set()
+        st.rerun()
 
-# --- STEP 3: SEND ---
+# --- 4. TEMPLATE ENGINE (WRITE & PREVIEW) ---
+if st.session_state.df_processed is not None:
+    st.header("2. Compose Email")
+    
+    # Tabs for Write vs Preview
+    tab_write, tab_preview = st.tabs(["✏️ Write & Map", "👁️ Preview"])
+    
+    with tab_write:
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            subject = st.text_input("Subject", key="input_subject")
+            body = st.text_area("Email Body", height=300, key="input_body", help="Use {Variable} for placeholders")
+            is_html = st.checkbox("Send as HTML", key="input_is_html")
+            
+            if st.button("💾 Save Template"):
+                trigger_save()
+                st.toast("Template saved!")
+        
+        with col2:
+            st.markdown("### 🗺️ Map Variables")
+            st.info("Map your {Placeholders} to Excel Columns")
+            
+            # Find variables
+            vars_in_text = set(re.findall(r'\{([^}]+)\}', subject + body))
+            cols = [c for c in st.session_state.df_processed.columns if c != '_id']
+            
+            # Dynamic Mapping Inputs
+            current_mapping = st.session_state.mapping
+            new_mapping = {}
+            
+            for v in vars_in_text:
+                # Try to find existing map or guess
+                default_idx = 0
+                if v in current_mapping and current_mapping[v] in cols:
+                    default_idx = cols.index(current_mapping[v])
+                else:
+                    # Guess
+                    default_idx = next((i for i, c in enumerate(cols) if v.lower() in c.lower()), 0)
+                
+                selected_col = st.selectbox(f"{{{v}}}", cols, index=default_idx, key=f"map_{v}")
+                new_mapping[v] = selected_col
+            
+            # Update mapping in state
+            st.session_state.mapping = new_mapping
+
+    with tab_preview:
+        st.markdown("### 📧 Preview")
+        st.caption("This preview simulates a Light Mode email client to ensure colors appear correctly.")
+        
+        if st.session_state.df_processed is not None and len(st.session_state.df_processed) > 0:
+            # Controls to cycle through recipients
+            prev_col, next_col, _ = st.columns([1, 1, 4])
+            if 'preview_idx' not in st.session_state:
+                st.session_state.preview_idx = 0
+                
+            if prev_col.button("⬅️ Previous"):
+                st.session_state.preview_idx = max(0, st.session_state.preview_idx - 1)
+            if next_col.button("Next ➡️"):
+                st.session_state.preview_idx = min(len(st.session_state.df_processed) - 1, st.session_state.preview_idx + 1)
+            
+            # Get Data Row
+            row = st.session_state.df_processed.iloc[st.session_state.preview_idx]
+            
+            try:
+                # Substitute
+                ctx = {v: str(row[st.session_state.mapping.get(v, v)]) for v in vars_in_text}
+                prev_subj = subject.format(**ctx)
+                prev_body = body.format(**ctx)
+                
+                # Display Headers
+                st.markdown(f"**To:** {row.get('Email', 'Unknown')}")
+                st.markdown(f"**Subject:** {prev_subj}")
+                st.divider()
+                
+                if is_html:
+                    # --- FIX: FORCE LIGHT MODE WRAPPER ---
+                    html_preview = f"""
+                    <div style="
+                        background-color: #ffffff; 
+                        color: #000000; 
+                        padding: 20px; 
+                        border: 1px solid #e0e0e0;
+                        border-radius: 5px; 
+                        font-family: Arial, sans-serif;
+                    ">
+                        {prev_body}
+                    </div>
+                    """
+                    # Render with sufficient height
+                    components.html(html_preview, height=600, scrolling=True)
+                else:
+                    st.text(prev_body)
+                    
+            except KeyError as e:
+                st.error(f"Mapping Error: {e}. Please check the 'Map Variables' section.")
+            except Exception as e:
+                st.error(f"Preview Error: {e}")
+        else:
+            st.warning("No data loaded to preview.")
+
+# --- 5. SENDING ---
 if st.session_state.df_processed is not None:
     st.header("3. Launch Campaign")
     
-    if st.button("🚀 Start / Resume", type="primary"):
-        sender = EmailSender() 
+    # Identify Email Column
+    cols = st.session_state.df_processed.columns.tolist()
+    target_email_col = st.selectbox("Confirm Column to Send To:", cols, 
+                                    index=next((i for i, c in enumerate(cols) if 'email' in c.lower()), 0))
+
+    if st.button("🚀 Start / Resume Campaign", type="primary"):
+        if not os.getenv("SENDER_EMAIL"):
+            st.error("Missing .env credentials!")
+            st.stop()
+            
+        sender = EmailSender()
+        trigger_save() # Save before starting
         
-        # UI Elements
-        status_box = st.status("Running Campaign...", expanded=True)
-        log_area = st.container()
+        progress_bar = st.progress(0)
+        status = st.empty()
+        log = st.container()
         
         df = st.session_state.df_processed
-        
-        # Counters for this run
-        batch_counter = 0
+        total = len(df)
+        batch_count = 0
         
         for idx, row in df.iterrows():
             uid = row['_id']
-            email = row[email_col]
+            email_addr = row[target_email_col]
             
-            # 1. Skip if already sent
+            # SKIP IF SENT
             if uid in st.session_state.sent_ids:
                 continue
             
-            # 2. Check Batch Limit
-            # We check if we have sent any emails this session to avoid immediate pause
-            if batch_counter > 0 and batch_counter % batch_size == 0:
-                status_box.update(label=f"Sleeping for {batch_delay}s (Batch limit reached)...", state="running")
+            # BATCH PAUSE
+            if batch_count > 0 and batch_count % batch_size == 0:
+                status.warning(f"Batch limit hit. Pausing for {batch_delay}s...")
                 time.sleep(batch_delay)
-                status_box.update(label="Resuming...", state="running")
-                
+            
             try:
-                # 3. Prepare Content
-                ctx = {v: str(row[mapping[v]]) for v in vars_needed}
-                final_subj = subject_tpl.format(**ctx)
-                final_body = body_tpl.format(**ctx)
+                # PREPARE: read template values from session state to avoid unbound variables
+                subject = st.session_state.get('input_subject', '')
+                body = st.session_state.get('input_body', '')
+                is_html = st.session_state.get('input_is_html', False)
+
+                vars_in_text = set(re.findall(r'\{([^}]+)\}', subject + body))
+                ctx = {v: str(row[st.session_state.mapping.get(v, v)]) for v in vars_in_text}
                 
-                # 4. Send
-                status_box.write(f"Sending to {email}...")
-                ok, msg = sender.send_email(email, final_subj, final_body)
+                final_subj = subject.format(**ctx)
+                final_body = body.format(**ctx)
+                
+                # SEND
+                status.text(f"Sending to {email_addr}...")
+                ok, msg = sender.send_email(email_addr, final_subj, final_body, is_html=is_html)
                 
                 if ok:
-                    # Mark as sent
                     st.session_state.sent_ids.add(uid)
-                    batch_counter += 1
+                    batch_count += 1
+                    with log:
+                        st.success(f"✅ Sent: {email_addr}")
                     
-                    with log_area:
-                        st.toast(f"✅ Sent: {email}")
-                    
-                    # 5. Auto-Save State
-                    save_state(
-                        {"sub": subject_tpl, "body": body_tpl}, 
-                        mapping, 
-                        df, 
-                        st.session_state.sent_ids
-                    )
+                    # SAVE PROGRESS IMMEDIATELY
+                    trigger_save()
                 else:
-                    st.error(f"❌ Failed: {email} - {msg}")
+                    with log:
+                        st.error(f"❌ Failed: {email_addr} - {msg}")
                 
-                # 6. Random Delay between emails
                 time.sleep(random.randint(min_delay, max_delay))
                 
             except Exception as e:
-                st.error(f"Error on row {idx}: {e}")
-        
-        status_box.update(label="Campaign Complete!", state="complete", expanded=False)
-        st.success("All emails in the list have been processed.")
+                st.error(f"Row Error: {e}")
+                
+        st.success("Campaign Run Complete!")

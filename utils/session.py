@@ -7,7 +7,6 @@ import shutil
 DATA_DIR = "data"
 SESSIONS_DIR = os.path.join(DATA_DIR, "sessions")
 TEMPLATES_DIR = os.path.join(DATA_DIR, "templates")
-# Unified Attachment Pool
 ATTACHMENTS_DIR = os.path.join(DATA_DIR, "attachments")
 
 def init_dirs():
@@ -16,7 +15,6 @@ def init_dirs():
         if not os.path.exists(d):
             os.makedirs(d)
 
-# --- HELPER: SMART DELETE ---
 def _get_all_used_attachments(ignore_file_path=None):
     """
     Scans ALL sessions and templates to find which attachment paths are currently in use.
@@ -79,12 +77,13 @@ def list_sessions():
     files = [f.replace('.json', '') for f in os.listdir(SESSIONS_DIR) if f.endswith('.json')]
     return sorted(files)
 
-def save_session(session_name, template_data, mapping, df, sent_ids):
+def save_session(session_name, template_data, mapping, df, sent_ids, sent_history):
     init_dirs()
     state = {
         "template": template_data,
         "mapping": mapping,
         "sent_ids": list(sent_ids),
+        "sent_history": sent_history,
         "data": df.to_dict(orient='records') if df is not None else None
     }
     filepath = os.path.join(SESSIONS_DIR, f"{session_name}.json")
@@ -110,6 +109,7 @@ def load_session(session_name):
             state['data'] = None
             
         state['sent_ids'] = set(state.get('sent_ids', []))
+        state['sent_history'] = state.get('sent_history', [])
         
         # Defaults
         if not state.get('template'):

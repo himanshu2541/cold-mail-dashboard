@@ -155,5 +155,5 @@ def render_sidebar():
         max_d = st.number_input("Max Delay", 50)
         batch_sz = st.number_input("Batch Size", 20)
         batch_dl = st.number_input("Batch Pause", 300)
-        
-        return min_d, max_d, batch_sz, batch_dl
+        daily_limit = st.number_input("Max Emails Per Day", value=200, help="Stops sending after reaching this limit for the current day.")
+        return min_d, max_d, batch_sz, batch_dl, daily_limit

@@ -18,7 +18,8 @@ def trigger_save():
             tpl_data,
             st.session_state.get('mapping', {}),
             st.session_state.get('df_processed'),
-            st.session_state.get('sent_ids', set())
+            st.session_state.get('sent_ids', set()),
+            st.session_state.get('sent_history', []) # Pass history
         )
 
 def init_state():
@@ -26,6 +27,7 @@ def init_state():
     defaults = {
         'df_processed': None,
         'sent_ids': set(),
+        'sent_history': [], # Store full metadata logs
         'current_session': None,
         'mapping': {},
         'attachment_path': None,

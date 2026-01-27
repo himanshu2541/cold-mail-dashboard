@@ -8,7 +8,7 @@ from datetime import datetime
 from utils.sender import EmailSender
 from components.state import trigger_save
 
-def render_launcher(min_d, max_d, batch_sz, batch_dl):
+def render_launcher(min_d, max_d, batch_sz, batch_dl, daily_limit):
     st.header("3. Preview & Launch")
     
     # --- INIT CONSOLE LOGS ---
@@ -62,7 +62,6 @@ def render_launcher(min_d, max_d, batch_sz, batch_dl):
         if len(st.session_state.console_logs) > 100:
             st.session_state.console_logs.pop()
             
-        # FORCE UI UPDATE IMMEDIATELY
         render_console()
 
     tab_preview, tab_launch = st.tabs(["👁️ Preview", "🚀 Launch"])
@@ -72,10 +71,14 @@ def render_launcher(min_d, max_d, batch_sz, batch_dl):
         if st.session_state.df_processed is not None and len(st.session_state.df_processed) > 0:
             if 'p_idx' not in st.session_state: st.session_state.p_idx = 0
             
+            max_preview = min(len(st.session_state.df_processed)-1, 9)
+
             c1, c2, _ = st.columns([1,1,4])
             if c1.button("⬅️"): st.session_state.p_idx = max(0, st.session_state.p_idx - 1)
-            if c2.button("➡️"): st.session_state.p_idx = min(len(st.session_state.df_processed)-1, st.session_state.p_idx + 1)
+            if c2.button("➡️"): st.session_state.p_idx = min(max_preview, st.session_state.p_idx + 1)
             
+            st.caption(f"Previewing {st.session_state.p_idx + 1} of {max_preview + 1} (Limited to first 10)")
+
             row = st.session_state.df_processed.iloc[st.session_state.p_idx]
             subject = st.session_state.input_subject
             body = st.session_state.input_body
@@ -112,6 +115,9 @@ def render_launcher(min_d, max_d, batch_sz, batch_dl):
             target_col = st.selectbox("Confirm Target Email Column", cols, index=em_idx)
             
             st.divider()
+
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            sent_today = sum(1 for x in st.session_state.sent_history if x.get('timestamp', '').startswith(today_str))
 
             # --- METRICS ---
             total_emails = len(st.session_state.df_processed)
@@ -162,7 +168,6 @@ def render_launcher(min_d, max_d, batch_sz, batch_dl):
                         if st.button("🛑 Stop Gracefully", disabled=not st.session_state.is_running):
                             st.session_state.is_running = False
                             add_log("Stop signal received. Finishing current task...", "warning")
-                            # We don't rerun immediately here, we let the loop finish gracefully
                     
                     with c_clear:
                         if st.button("🧹 Clear Logs"):
@@ -173,6 +178,12 @@ def render_launcher(min_d, max_d, batch_sz, batch_dl):
             if st.session_state.is_running:
                 
                 unsent_rows = [r for _, r in st.session_state.df_processed.iterrows() if r['_id'] not in st.session_state.sent_ids]
+                
+                current_sent_today = sum(1 for x in st.session_state.sent_history if x.get('timestamp', '').startswith(today_str))
+                if current_sent_today >= daily_limit:
+                    st.session_state.is_running = False
+                    add_log(f"Daily limit ({daily_limit}) reached!", "warning")
+                    st.rerun()
                 
                 if not unsent_rows:
                     st.session_state.is_running = False
@@ -231,10 +242,22 @@ def render_launcher(min_d, max_d, batch_sz, batch_dl):
                     # 3. Update Log AFTER sending
                     if ok:
                         st.session_state.sent_ids.add(uid)
+                        st.session_state.sent_history.append({
+                            "id": uid,
+                            "email": email_addr,
+                            "timestamp": datetime.now().isoformat(),
+                            "status": "success"
+                        })
                         trigger_save()
                         add_log(f"Sent: {email_addr}", "success")
                     else:
                         st.session_state.sent_ids.add(uid)
+                        st.session_state.sent_history.append({
+                            "id": uid,
+                            "email": email_addr,
+                            "timestamp": datetime.now().isoformat(),
+                            "status": f"failed: {msg}"
+                        })
                         add_log(f"Failed: {email_addr} - {msg}", "error")
 
                     if att_obj: att_obj.close()

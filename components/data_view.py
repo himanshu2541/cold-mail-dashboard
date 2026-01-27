@@ -25,7 +25,7 @@ def render_data_view():
     else:
         st.success(f"✅ Loaded {len(st.session_state.df_processed)} recipients")
         with st.expander("View Data"):
-            st.dataframe(st.session_state.df_processed.head())
+            st.dataframe(st.session_state.df_processed.head(300))
         
         if st.button("🗑️ Clear Data (Keep Template)"):
             st.session_state.df_processed = None

@@ -1,6 +1,10 @@
 import streamlit as st
 import re
-from utils.session import load_session, list_sessions, list_templates, load_template_file, save_template_file
+import os
+from utils.session import (
+    load_session, list_sessions, list_templates, 
+    load_template_file, save_template_file, delete_session, delete_template_file
+)
 from components.state import trigger_save
 
 def render_sidebar():
@@ -29,8 +33,36 @@ def render_sidebar():
             if st.session_state.current_session in sessions:
                 idx = sessions.index(st.session_state.current_session)
             
-            sel_sess = st.selectbox("Active Session", ["-- Select --"] + sessions, index=idx + 1 if st.session_state.current_session else 0)
+            # Layout for Select + Delete
+            col_sel, col_del = st.columns([5, 1])
+            with col_sel:
+                sel_sess = st.selectbox(
+                    "Active Session", 
+                    ["-- Select --"] + sessions, 
+                    index=idx + 1 if st.session_state.current_session else 0,
+                    label_visibility="collapsed"
+                )
             
+            # Delete Session Logic
+            if st.session_state.current_session:
+                with col_del:
+                    if st.button("🗑️", help="Delete Session"):
+                        st.session_state.delete_confirm_sess = st.session_state.current_session
+            
+            # Confirm Dialog for Session
+            if st.session_state.get('delete_confirm_sess'):
+                st.warning(f"Delete '{st.session_state.delete_confirm_sess}'?")
+                c1, c2 = st.columns(2)
+                if c1.button("Yes, Delete"):
+                    delete_session(st.session_state.delete_confirm_sess)
+                    st.session_state.current_session = None
+                    st.session_state.delete_confirm_sess = None
+                    st.rerun()
+                if c2.button("Cancel"):
+                    st.session_state.delete_confirm_sess = None
+                    st.rerun()
+
+            # Load Session Logic
             if sel_sess != "-- Select --" and sel_sess != st.session_state.current_session:
                 state = load_session(sel_sess)
                 if state:
@@ -64,21 +96,54 @@ def render_sidebar():
                         tpl_name, 
                         st.session_state.input_subject,
                         st.session_state.input_body,
-                        st.session_state.input_is_html
+                        st.session_state.input_is_html,
+                        st.session_state.attachment_path,
+                        st.session_state.attachment_name
                     )
                     st.toast(f"Saved: {tpl_name}")
 
             st.markdown("---")
             
             templates = list_templates()
-            sel_tpl = st.selectbox("Load Template", ["-- Select --"] + templates)
+            
+            # Layout for Load + Delete
+            t_col_sel, t_col_del = st.columns([5, 1])
+            with t_col_sel:
+                sel_tpl = st.selectbox("Load Template", ["-- Select --"] + templates)
+            
+            with t_col_del:
+                # We need a key to identify which template is selected for deletion
+                # Using session state to track potential deletion target
+                if sel_tpl != "-- Select --":
+                    if st.button("🗑️", key="del_tpl_btn", help="Delete Template"):
+                        st.session_state.delete_confirm_tpl = sel_tpl
+
+            # Confirm Dialog for Template
+            if st.session_state.get('delete_confirm_tpl'):
+                st.warning(f"Delete template '{st.session_state.delete_confirm_tpl}'?")
+                tc1, tc2 = st.columns(2)
+                if tc1.button("Yes", key="conf_del_tpl"):
+                    delete_template_file(st.session_state.delete_confirm_tpl)
+                    st.session_state.delete_confirm_tpl = None
+                    st.rerun()
+                if tc2.button("No", key="canc_del_tpl"):
+                    st.session_state.delete_confirm_tpl = None
+                    st.rerun()
+
             if st.button("📂 Load Template"):
                 if sel_tpl != "-- Select --":
                     tpl = load_template_file(sel_tpl)
                     if tpl:
-                        st.session_state.input_subject = tpl['subject']
-                        st.session_state.input_body = tpl['body']
-                        st.session_state.input_is_html = tpl['is_html']
+                        st.session_state.input_subject = tpl.get('subject', '')
+                        st.session_state.input_body = tpl.get('body', '')
+                        st.session_state.input_is_html = tpl.get('is_html', False)
+                        
+                        # Handle Attachment Loading
+                        # If template has attachment, we use that path.
+                        # Note: This path points to templates/attachments/
+                        st.session_state.attachment_path = tpl.get('attachment_path')
+                        st.session_state.attachment_name = tpl.get('attachment_name')
+                        
                         trigger_save()
                         st.rerun()
         

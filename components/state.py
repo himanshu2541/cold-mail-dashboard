@@ -32,7 +32,11 @@ def init_state():
         'attachment_name': "",
         'input_subject': "",
         'input_body': "",
-        'input_is_html': False
+        'input_is_html': False,
+        'is_running': False,
+        'delete_confirm_sess': None,
+        'delete_confirm_tpl': None,
+        'uploader_key': 0 
     }
     for key, val in defaults.items():
         if key not in st.session_state:

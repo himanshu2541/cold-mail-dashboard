@@ -39,6 +39,6 @@ def render_history():
     # Simple table view
     st.dataframe(
         df_hist[['Date', 'Time', 'email', 'status']], 
-        use_container_width=True,
+        width='stretch',
         hide_index=True
     )

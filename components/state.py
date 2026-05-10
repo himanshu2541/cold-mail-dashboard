@@ -19,7 +19,10 @@ def trigger_save():
             st.session_state.get('mapping', {}),
             st.session_state.get('df_processed'),
             st.session_state.get('sent_ids', set()),
-            st.session_state.get('sent_history', []) # Pass history
+            st.session_state.get('sent_history', []),
+            tracking_state=st.session_state.get('tracking_state', {}),
+            campaign_stage=st.session_state.get('campaign_stage', 0),
+            parent_session=st.session_state.get('parent_session'),
         )
 
 def init_state():
@@ -28,6 +31,7 @@ def init_state():
         'df_processed': None,
         'sent_ids': set(),
         'sent_history': [], # Store full metadata logs
+        'tracking_state': {},
         'current_session': None,
         'mapping': {},
         'attachment_path': None,
@@ -35,6 +39,8 @@ def init_state():
         'input_subject': "",
         'input_body': "",
         'input_is_html': False,
+        'campaign_stage': 0,
+        'parent_session': None,
         'is_running': False,
         'delete_confirm_sess': None,
         'delete_confirm_tpl': None,

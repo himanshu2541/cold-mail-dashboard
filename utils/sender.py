@@ -1,5 +1,6 @@
 import smtplib
 import os
+from email.utils import make_msgid
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
@@ -19,12 +20,27 @@ class EmailSender:
         assert self.email is not None
         assert self.password is not None
 
-    def send_email(self, to_email, subject, body, attachment_file=None, attachment_name=None, is_html=False):
+    def send_email(
+        self,
+        to_email,
+        subject,
+        body,
+        attachment_file=None,
+        attachment_name=None,
+        is_html=False,
+        thread_message_id=None,
+        references=None,
+    ):
         try:
             msg = MIMEMultipart()
             msg['From'] = self.email # type: ignore
             msg['To'] = to_email
             msg['Subject'] = subject
+            msg['Message-ID'] = make_msgid()
+
+            if thread_message_id:
+                msg['In-Reply-To'] = thread_message_id
+                msg['References'] = references or thread_message_id
 
             msg.attach(MIMEText(body, 'html' if is_html else 'plain'))
 
@@ -39,6 +55,6 @@ class EmailSender:
                 server.login(self.email, self.password) # type: ignore
                 server.send_message(msg)
             
-            return True, "Success"
+            return True, "Success", msg['Message-ID']
         except Exception as e:
-            return False, str(e)
+            return False, str(e), None

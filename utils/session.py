@@ -1,13 +1,190 @@
 import json
 import os
 import pandas as pd
-import shutil
+from copy import deepcopy
 
 # Directories
 DATA_DIR = "data"
 SESSIONS_DIR = os.path.join(DATA_DIR, "sessions")
 TEMPLATES_DIR = os.path.join(DATA_DIR, "templates")
 ATTACHMENTS_DIR = os.path.join(DATA_DIR, "attachments")
+
+DEFAULT_TRACKING_STATUS = "active"
+FOLLOW_UP_READY_STATUSES = {"active"}
+
+
+def _extract_email_from_row(row):
+    for key, value in row.items():
+        if isinstance(key, str) and "email" in key.lower():
+            return value or ""
+    return ""
+
+
+def normalize_sent_history(sent_history):
+    normalized = []
+    for item in sent_history or []:
+        entry = dict(item)
+        status = str(entry.get("status", "")).lower()
+        delivery = "success" if status == "success" else "failed"
+
+        if "delivery_status" not in entry:
+            entry["delivery_status"] = delivery
+        if "manual_status" not in entry:
+            entry["manual_status"] = DEFAULT_TRACKING_STATUS if delivery == "success" else "failed"
+        if "follow_up_stage" not in entry:
+            entry["follow_up_stage"] = 0
+        if "selected_for_follow_up" not in entry:
+            entry["selected_for_follow_up"] = False
+        if "thread_root_message_id" not in entry:
+            entry["thread_root_message_id"] = entry.get("message_id")
+        if "last_message_id" not in entry:
+            entry["last_message_id"] = entry.get("message_id")
+        if "references" not in entry:
+            entry["references"] = entry.get("message_id")
+        if "last_error" not in entry:
+            entry["last_error"] = "" if delivery == "success" else str(entry.get("status", ""))
+
+        normalized.append(entry)
+    return normalized
+
+
+def build_tracking_state(df, sent_history, tracking_state=None):
+    records = {}
+
+    if df is not None and "_id" in df.columns:
+        for row in df.to_dict(orient="records"):
+            uid = row.get("_id")
+            if not uid:
+                continue
+            records[uid] = {
+                "id": uid,
+                "email": _extract_email_from_row(row),
+                "delivery_status": "pending",
+                "manual_status": DEFAULT_TRACKING_STATUS,
+                "follow_up_stage": 0,
+                "selected_for_follow_up": False,
+                "thread_root_message_id": None,
+                "last_message_id": None,
+                "references": None,
+                "last_sent_at": None,
+                "last_error": "",
+            }
+
+    for uid, item in (tracking_state or {}).items():
+        base = records.get(uid, {"id": uid})
+        base.update(item)
+        records[uid] = base
+
+    for item in normalize_sent_history(sent_history):
+        uid = item.get("id")
+        if not uid:
+            continue
+        base = records.get(uid, {"id": uid})
+        base["email"] = item.get("email", base.get("email", ""))
+        base["delivery_status"] = item.get("delivery_status", "pending")
+        base["manual_status"] = item.get("manual_status", base.get("manual_status", DEFAULT_TRACKING_STATUS))
+        base["follow_up_stage"] = item.get("follow_up_stage", base.get("follow_up_stage", 0))
+        base["selected_for_follow_up"] = item.get("selected_for_follow_up", base.get("selected_for_follow_up", False))
+        base["thread_root_message_id"] = item.get("thread_root_message_id") or base.get("thread_root_message_id")
+        base["last_message_id"] = item.get("last_message_id") or base.get("last_message_id")
+        base["references"] = item.get("references") or base.get("references")
+        base["last_sent_at"] = item.get("timestamp", base.get("last_sent_at"))
+        base["last_error"] = item.get("last_error", base.get("last_error", ""))
+        records[uid] = base
+
+    return records
+
+
+def update_tracking_entry(tracking_state, history_item):
+    uid = history_item["id"]
+    current = deepcopy(tracking_state.get(uid, {"id": uid}))
+    current["email"] = history_item.get("email", current.get("email", ""))
+    current["delivery_status"] = history_item.get("delivery_status", current.get("delivery_status", "pending"))
+    current["manual_status"] = history_item.get("manual_status", current.get("manual_status", DEFAULT_TRACKING_STATUS))
+    current["follow_up_stage"] = history_item.get("follow_up_stage", current.get("follow_up_stage", 0))
+    current["selected_for_follow_up"] = history_item.get("selected_for_follow_up", current.get("selected_for_follow_up", False))
+    current["thread_root_message_id"] = history_item.get("thread_root_message_id") or current.get("thread_root_message_id")
+    current["last_message_id"] = history_item.get("last_message_id") or current.get("last_message_id")
+    current["references"] = history_item.get("references") or current.get("references")
+    current["last_sent_at"] = history_item.get("timestamp", current.get("last_sent_at"))
+    current["last_error"] = history_item.get("last_error", current.get("last_error", ""))
+    tracking_state[uid] = current
+    return current
+
+
+def set_tracking_manual_updates(tracking_state, updates):
+    for item in updates:
+        uid = item.get("id")
+        if not uid or uid not in tracking_state:
+            continue
+
+        manual_status = item.get("manual_status", tracking_state[uid].get("manual_status", DEFAULT_TRACKING_STATUS))
+        selected = bool(item.get("selected_for_follow_up", tracking_state[uid].get("selected_for_follow_up", False)))
+
+        if manual_status not in FOLLOW_UP_READY_STATUSES:
+            selected = False
+
+        tracking_state[uid]["manual_status"] = manual_status
+        tracking_state[uid]["selected_for_follow_up"] = selected
+
+
+def create_follow_up_session(source_session_name, new_session_name, source_state):
+    if not new_session_name:
+        return False, "Follow-up session name is required."
+
+    target_path = os.path.join(SESSIONS_DIR, f"{new_session_name}.json")
+    if os.path.exists(target_path):
+        return False, f"Session '{new_session_name}' already exists."
+
+    tracking_state = source_state.get("tracking_state", {})
+    selected_ids = [
+        uid
+        for uid, item in tracking_state.items()
+        if item.get("selected_for_follow_up")
+        and item.get("delivery_status") == "success"
+        and item.get("manual_status") in FOLLOW_UP_READY_STATUSES
+    ]
+
+    if not selected_ids:
+        return False, "No selected recipients are eligible for follow-up."
+
+    source_df = source_state.get("data")
+    if source_df is None or source_df.empty:
+        return False, "Current session has no recipient data to build the follow-up list."
+
+    follow_up_df = source_df[source_df["_id"].isin(selected_ids)].copy()
+    if follow_up_df.empty:
+        return False, "Selected recipients could not be matched to session data."
+
+    next_stage = max((tracking_state[uid].get("follow_up_stage", 0) for uid in selected_ids), default=0) + 1
+    next_tracking = {}
+
+    for uid in selected_ids:
+        entry = deepcopy(tracking_state[uid])
+        entry["delivery_status"] = "pending"
+        entry["selected_for_follow_up"] = False
+        entry["follow_up_stage"] = next_stage
+        entry["last_error"] = ""
+        next_tracking[uid] = entry
+
+    ok = save_session(
+        new_session_name,
+        source_state.get("template", {}),
+        source_state.get("mapping", {}),
+        follow_up_df,
+        set(),
+        [],
+        tracking_state=next_tracking,
+        campaign_stage=next_stage,
+        parent_session=source_session_name,
+    )
+    if not ok:
+        return False, "Failed to save follow-up session."
+
+    for uid in selected_ids:
+        tracking_state[uid]["selected_for_follow_up"] = False
+
+    return True, f"Created follow-up session '{new_session_name}' with {len(selected_ids)} recipients."
 
 def init_dirs():
     """Ensures all necessary directories exist"""
@@ -77,13 +254,28 @@ def list_sessions():
     files = [f.replace('.json', '') for f in os.listdir(SESSIONS_DIR) if f.endswith('.json')]
     return sorted(files)
 
-def save_session(session_name, template_data, mapping, df, sent_ids, sent_history):
+def save_session(
+    session_name,
+    template_data,
+    mapping,
+    df,
+    sent_ids,
+    sent_history,
+    tracking_state=None,
+    campaign_stage=0,
+    parent_session=None,
+):
     init_dirs()
+    normalized_history = normalize_sent_history(sent_history)
+    merged_tracking = build_tracking_state(df, normalized_history, tracking_state)
     state = {
         "template": template_data,
         "mapping": mapping,
         "sent_ids": list(sent_ids),
-        "sent_history": sent_history,
+        "sent_history": normalized_history,
+        "tracking_state": merged_tracking,
+        "campaign_stage": campaign_stage,
+        "parent_session": parent_session,
         "data": df.to_dict(orient='records') if df is not None else None
     }
     filepath = os.path.join(SESSIONS_DIR, f"{session_name}.json")
@@ -109,7 +301,14 @@ def load_session(session_name):
             state['data'] = None
             
         state['sent_ids'] = set(state.get('sent_ids', []))
-        state['sent_history'] = state.get('sent_history', [])
+        state['sent_history'] = normalize_sent_history(state.get('sent_history', []))
+        state['tracking_state'] = build_tracking_state(
+            state['data'],
+            state['sent_history'],
+            state.get('tracking_state', {}),
+        )
+        state['campaign_stage'] = state.get('campaign_stage', 0)
+        state['parent_session'] = state.get('parent_session')
         
         # Defaults
         if not state.get('template'):

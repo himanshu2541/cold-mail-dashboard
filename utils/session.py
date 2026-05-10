@@ -13,6 +13,10 @@ DEFAULT_TRACKING_STATUS = "active"
 FOLLOW_UP_READY_STATUSES = {"active"}
 
 
+def _default_follow_up_selected(delivery_status, manual_status):
+    return delivery_status == "success" and manual_status in FOLLOW_UP_READY_STATUSES
+
+
 def _extract_email_from_row(row):
     for key, value in row.items():
         if isinstance(key, str) and "email" in key.lower():
@@ -34,7 +38,10 @@ def normalize_sent_history(sent_history):
         if "follow_up_stage" not in entry:
             entry["follow_up_stage"] = 0
         if "selected_for_follow_up" not in entry:
-            entry["selected_for_follow_up"] = False
+            entry["selected_for_follow_up"] = _default_follow_up_selected(
+                entry["delivery_status"],
+                entry["manual_status"],
+            )
         if "thread_root_message_id" not in entry:
             entry["thread_root_message_id"] = entry.get("message_id")
         if "last_message_id" not in entry:
@@ -84,7 +91,13 @@ def build_tracking_state(df, sent_history, tracking_state=None):
         base["delivery_status"] = item.get("delivery_status", "pending")
         base["manual_status"] = item.get("manual_status", base.get("manual_status", DEFAULT_TRACKING_STATUS))
         base["follow_up_stage"] = item.get("follow_up_stage", base.get("follow_up_stage", 0))
-        base["selected_for_follow_up"] = item.get("selected_for_follow_up", base.get("selected_for_follow_up", False))
+        base["selected_for_follow_up"] = item.get(
+            "selected_for_follow_up",
+            base.get(
+                "selected_for_follow_up",
+                _default_follow_up_selected(base["delivery_status"], base["manual_status"]),
+            ),
+        )
         base["thread_root_message_id"] = item.get("thread_root_message_id") or base.get("thread_root_message_id")
         base["last_message_id"] = item.get("last_message_id") or base.get("last_message_id")
         base["references"] = item.get("references") or base.get("references")
@@ -102,7 +115,13 @@ def update_tracking_entry(tracking_state, history_item):
     current["delivery_status"] = history_item.get("delivery_status", current.get("delivery_status", "pending"))
     current["manual_status"] = history_item.get("manual_status", current.get("manual_status", DEFAULT_TRACKING_STATUS))
     current["follow_up_stage"] = history_item.get("follow_up_stage", current.get("follow_up_stage", 0))
-    current["selected_for_follow_up"] = history_item.get("selected_for_follow_up", current.get("selected_for_follow_up", False))
+    current["selected_for_follow_up"] = history_item.get(
+        "selected_for_follow_up",
+        current.get(
+            "selected_for_follow_up",
+            _default_follow_up_selected(current["delivery_status"], current["manual_status"]),
+        ),
+    )
     current["thread_root_message_id"] = history_item.get("thread_root_message_id") or current.get("thread_root_message_id")
     current["last_message_id"] = history_item.get("last_message_id") or current.get("last_message_id")
     current["references"] = history_item.get("references") or current.get("references")

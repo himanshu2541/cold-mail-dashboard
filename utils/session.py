@@ -77,11 +77,6 @@ def build_tracking_state(df, sent_history, tracking_state=None):
                 "last_error": "",
             }
 
-    for uid, item in (tracking_state or {}).items():
-        base = records.get(uid, {"id": uid})
-        base.update(item)
-        records[uid] = base
-
     for item in normalize_sent_history(sent_history):
         uid = item.get("id")
         if not uid:
@@ -103,6 +98,13 @@ def build_tracking_state(df, sent_history, tracking_state=None):
         base["references"] = item.get("references") or base.get("references")
         base["last_sent_at"] = item.get("timestamp", base.get("last_sent_at"))
         base["last_error"] = item.get("last_error", base.get("last_error", ""))
+        records[uid] = base
+
+    # Tracking state contains the latest manual decisions from the UI, so it must
+    # override older values reconstructed from send history.
+    for uid, item in (tracking_state or {}).items():
+        base = records.get(uid, {"id": uid})
+        base.update(item)
         records[uid] = base
 
     return records
